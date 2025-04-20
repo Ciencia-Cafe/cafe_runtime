@@ -323,6 +323,8 @@ name = "deno_server"
 version = "0.1.0"
 dependencies = [
  "deno_core",
+ "deno_error",
+ "thiserror",
  "tokio",
 ]
 
