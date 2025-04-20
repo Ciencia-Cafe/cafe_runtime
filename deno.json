@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "ext:runtime_http/": "./src/http/js/"
+  }
+}
