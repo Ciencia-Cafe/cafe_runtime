@@ -1,12 +1,14 @@
-use std::{borrow::Cow, cell::RefCell, rc::Rc};
+use std::{borrow::Cow, cell::RefCell, rc::Rc, sync::Arc};
 
 use deno_core::{
-    AsyncRefCell, CancelHandle, CancelTryFuture, OpState, RcRef, Resource,
-    ResourceId, anyhow::Result, op2,
+    AsyncRefCell, CancelTryFuture, OpState, RcRef, Resource, ResourceId,
+    anyhow::Result, op2,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+    spawn,
+    task::JoinHandle,
 };
 
 /// Our per-process `Connections`. We can use this to find an existent listener for
@@ -15,6 +17,7 @@ use tokio::{
 
 /// A strongly-typed network listener resource for something that
 /// implements `NetworkListenerTrait`.
+/*
 pub struct NetworkListenerResource {
     pub listener: AsyncRefCell<TcpListener>,
     pub cancel: CancelHandle,
@@ -38,6 +41,8 @@ impl Resource for NetworkListenerResource {
         self.cancel.cancel();
     }
 }
+
+*/
 #[derive(Debug, thiserror::Error, deno_error::JsError)]
 pub enum HttpError {
     #[class("BadResource")]
@@ -45,8 +50,44 @@ pub enum HttpError {
     ServerError,
 }
 
+async fn process(stream: &mut TcpStream) {
+    let response = "HTTP/1.1 200 OK\r\n\r\n";
+
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .map_err(|_| HttpError::ServerError)
+        .unwrap();
+
+    stream
+        .flush()
+        .await
+        .map_err(|_| HttpError::ServerError)
+        .unwrap();
+}
+
+struct HttpJoinHandle {
+    join_handle: AsyncRefCell<Option<JoinHandle<Result<(), HttpError>>>>,
+    rx: AsyncRefCell<tokio::sync::mpsc::Receiver<Rc<String>>>,
+}
+impl HttpJoinHandle {
+    fn new(rx: tokio::sync::mpsc::Receiver<Rc<String>>) -> Self {
+        Self {
+            join_handle: AsyncRefCell::new(None),
+            rx: AsyncRefCell::new(rx),
+        }
+    }
+}
+impl Resource for HttpJoinHandle {
+    fn name(&self) -> Cow<str> {
+        "http".into()
+    }
+
+    fn close(self: Rc<Self>) {}
+}
+
 #[op2(fast)]
-pub fn op_http_serve(state: &mut OpState) -> Result<u32, HttpError> {
+pub fn op_http_serve(state: Rc<RefCell<OpState>>) -> Result<u32, HttpError> {
     let std_listener = std::net::TcpListener::bind("127.0.0.1:8000")
         .map_err(|_| HttpError::ServerError)?;
 
@@ -57,17 +98,81 @@ pub fn op_http_serve(state: &mut OpState) -> Result<u32, HttpError> {
     let listener = TcpListener::from_std(std_listener)
         .map_err(|_| HttpError::ServerError)?;
 
+    let listener = Arc::new(listener);
     println!("{listener:?}");
 
-    let rid = state
-        .resource_table
-        .add(NetworkListenerResource::new(listener));
+    let (tx, rx) = tokio::sync::mpsc::channel(10);
+    let resource: Rc<HttpJoinHandle> = Rc::new(HttpJoinHandle::new(rx));
 
-    println!("rid: {rid:?}");
+    let handle = tokio::spawn(async move {
+        println!("waiting for reqs");
+        let conn = Arc::clone(&listener);
+
+        loop {
+            let (mut stream, _) = conn
+                .accept()
+                .await
+                .map_err(|_| HttpError::ServerError)
+                .unwrap();
+
+            println!("new req: {stream:?}");
+
+            let _next = spawn(async move {
+                process(&mut stream).await;
+            });
+        }
+    });
+
+    // Set the handle after we start the future
+    *RcRef::map(&resource, |this| &this.join_handle)
+        .try_borrow_mut()
+        .unwrap() = Some(handle);
+
+    let rid = state.borrow_mut().resource_table.add_rc(resource);
+
+    // let listener = NetworkListenerResource::new(listener);
+    //let rid = state.resource_table.add(listener);
+
+    //println!("rid: {rid:?}");
 
     Ok(rid)
 }
 
+#[op2(async)]
+pub async fn op_http_wait(
+    state: Rc<RefCell<OpState>>,
+    #[smi] rid: ResourceId,
+) -> Result<(), HttpError> {
+    // We will get the join handle initially, as we might be consuming requests still
+    let join_handle = state
+        .borrow_mut()
+        .resource_table
+        .get::<HttpJoinHandle>(rid)
+        .map_err(|_| HttpError::ServerError)?;
+
+    /*
+    * receive incomming requests here
+        async {
+            let mut recv =
+                RcRef::map(&join_handle, |this| &this.rx).borrow_mut().await;
+        };
+
+    // Send incomming request to Js land
+
+    */
+
+    let _res = RcRef::map(join_handle, |this| &this.join_handle)
+        .borrow_mut()
+        .await
+        .take()
+        .unwrap()
+        .await
+        .unwrap();
+
+    Ok(())
+}
+
+/*
 #[op2(async)]
 pub async fn op_http_accept(
     state: Rc<RefCell<OpState>>,
@@ -106,3 +211,4 @@ pub async fn op_http_accept(
 
     Ok(())
 }
+*/

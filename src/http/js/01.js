@@ -1,4 +1,4 @@
-import { op_http_accept, op_http_serve } from "ext:core/ops";
+import { op_http_serve, op_http_wait } from "ext:core/ops";
 
 export class Http {
   #rid;
@@ -14,7 +14,7 @@ export class Http {
     console.log("Serving http server", rid);
 
     while (true) {
-      await op_http_accept(rid);
+      await op_http_wait(rid);
     }
   }
 }
