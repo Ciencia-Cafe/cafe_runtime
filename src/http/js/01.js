@@ -14,7 +14,11 @@ export class Http {
     console.log("Serving http server", rid);
 
     while (true) {
-      await op_http_wait(rid);
+      const requestPointer = await op_http_wait(rid);
+      if (requestPointer) {
+        console.log("receive request:", requestPointer);
+        break;
+      }
     }
   }
 }

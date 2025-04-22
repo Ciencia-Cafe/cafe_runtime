@@ -1,9 +1,13 @@
-use std::{borrow::Cow, cell::RefCell, rc::Rc, sync::Arc};
+use std::{
+    borrow::Cow, cell::RefCell, io, net::SocketAddr, pin::Pin, ptr::null,
+    rc::Rc, sync::Arc, task::Poll,
+};
 
 use deno_core::{
-    AsyncRefCell, CancelTryFuture, OpState, RcRef, Resource, ResourceId,
-    anyhow::Result, op2,
+    AsyncRefCell, CancelTryFuture, ExternalPointer, OpState, RcRef, Resource,
+    ResourceId, anyhow::Result, external, op2,
 };
+use scopeguard::guard;
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
@@ -43,6 +47,61 @@ impl Resource for NetworkListenerResource {
 }
 
 */
+
+#[derive(Debug)]
+pub struct HttpStream {
+    stream: TcpStream,
+    response_body: Option<String>,
+    is_ready: bool,
+}
+
+impl HttpStream {
+    pub fn new(stream: TcpStream) -> Rc<Self> {
+        Rc::new(Self {
+            stream,
+            response_body: None,
+            is_ready: false,
+        })
+    }
+
+    pub fn set_response_body(&mut self, body: String) {
+        self.response_body = Some(body);
+    }
+
+    pub fn complete(&mut self) {
+        self.is_ready = true;
+    }
+
+    /// Resolves when response head is ready.
+    fn response_ready(&self) -> impl Future<Output = ()> + '_ {
+        struct HttpStreamReady<'a>(&'a HttpStream);
+
+        impl Future for HttpStreamReady<'_> {
+            type Output = ();
+
+            fn poll(
+                self: Pin<&mut Self>,
+                _cx: &mut core::task::Context<'_>,
+            ) -> Poll<Self::Output> {
+                let mut_self = self.0;
+                if mut_self.is_ready {
+                    return Poll::Ready(());
+                }
+                // mut_self.response_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+
+        HttpStreamReady(self)
+    }
+}
+
+#[repr(transparent)]
+struct RcHttpStream(Rc<HttpStream>);
+
+// Register the [`HttpRecord`] as an external.
+external!(RcHttpStream, "http stream");
+
 #[derive(Debug, thiserror::Error, deno_error::JsError)]
 pub enum HttpError {
     #[class("BadResource")]
@@ -50,28 +109,68 @@ pub enum HttpError {
     ServerError,
 }
 
-async fn process(stream: &mut TcpStream) {
+async fn handle_request(
+    stream: TcpStream,
+    tx: tokio::sync::mpsc::Sender<Rc<HttpStream>>,
+) {
+    let stream = HttpStream::new(stream);
+    println!("new req: {stream:?}");
+
+    let guarded_stream = guard(stream, |_| {});
+    // Clone HttpRecord and send to JavaScript for processing.
+    // Safe to unwrap as channel receiver is never closed.
+    tx.send(guarded_stream.clone()).await.unwrap();
+
+    println!("handle_request response_ready.await");
+    guarded_stream.response_ready().await;
+
+    /*
+        loop {
+            // Wait for the socket to be writable
+            stream.writable().await.unwrap();
+
+            // Try to write data, this may still fail with `WouldBlock`
+            // if the readiness event is a false positive.
+            match stream.try_write(b"hello world") {
+                Ok(n) => {
+                    println!("Write : {n:?}");
+                    break;
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    println!("ERROR: {e:?}");
+                    continue;
+                }
+                Err(e) => {
+                    println!("ERROR: {e:?}");
+                    break;
+                }
+            };
+        }
+    */
+
+    /*
     let response = "HTTP/1.1 200 OK\r\n\r\n";
+            stream
+            .write_all(b"Hello world")
+            .await
+            .map_err(|_| HttpError::ServerError)
+            .unwrap();
 
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .map_err(|_| HttpError::ServerError)
-        .unwrap();
-
-    stream
-        .flush()
-        .await
-        .map_err(|_| HttpError::ServerError)
-        .unwrap();
+        stream
+            .flush()
+            .await
+            .map_err(|_| HttpError::ServerError)
+            .unwrap();
+    */
 }
 
 struct HttpJoinHandle {
-    join_handle: AsyncRefCell<Option<JoinHandle<Result<(), HttpError>>>>,
-    rx: AsyncRefCell<tokio::sync::mpsc::Receiver<Rc<String>>>,
+    join_handle:
+        AsyncRefCell<Option<deno_unsync::JoinHandle<Result<(), HttpError>>>>,
+    rx: AsyncRefCell<tokio::sync::mpsc::Receiver<Rc<HttpStream>>>,
 }
 impl HttpJoinHandle {
-    fn new(rx: tokio::sync::mpsc::Receiver<Rc<String>>) -> Self {
+    fn new(rx: tokio::sync::mpsc::Receiver<Rc<HttpStream>>) -> Self {
         Self {
             join_handle: AsyncRefCell::new(None),
             rx: AsyncRefCell::new(rx),
@@ -104,22 +203,18 @@ pub fn op_http_serve(state: Rc<RefCell<OpState>>) -> Result<u32, HttpError> {
     let (tx, rx) = tokio::sync::mpsc::channel(10);
     let resource: Rc<HttpJoinHandle> = Rc::new(HttpJoinHandle::new(rx));
 
-    let handle = tokio::spawn(async move {
+    let handle = deno_unsync::spawn(async move {
         println!("waiting for reqs");
         let conn = Arc::clone(&listener);
 
         loop {
-            let (mut stream, _) = conn
+            let (stream, _) = conn
                 .accept()
                 .await
                 .map_err(|_| HttpError::ServerError)
                 .unwrap();
 
-            println!("new req: {stream:?}");
-
-            let _next = spawn(async move {
-                process(&mut stream).await;
-            });
+            let _next = handle_request(stream, tx.clone()).await;
         }
     });
 
@@ -130,11 +225,6 @@ pub fn op_http_serve(state: Rc<RefCell<OpState>>) -> Result<u32, HttpError> {
 
     let rid = state.borrow_mut().resource_table.add_rc(resource);
 
-    // let listener = NetworkListenerResource::new(listener);
-    //let rid = state.resource_table.add(listener);
-
-    //println!("rid: {rid:?}");
-
     Ok(rid)
 }
 
@@ -142,7 +232,7 @@ pub fn op_http_serve(state: Rc<RefCell<OpState>>) -> Result<u32, HttpError> {
 pub async fn op_http_wait(
     state: Rc<RefCell<OpState>>,
     #[smi] rid: ResourceId,
-) -> Result<(), HttpError> {
+) -> Result<*const std::ffi::c_void, HttpError> {
     // We will get the join handle initially, as we might be consuming requests still
     let join_handle = state
         .borrow_mut()
@@ -150,16 +240,20 @@ pub async fn op_http_wait(
         .get::<HttpJoinHandle>(rid)
         .map_err(|_| HttpError::ServerError)?;
 
-    /*
-    * receive incomming requests here
-        async {
-            let mut recv =
-                RcRef::map(&join_handle, |this| &this.rx).borrow_mut().await;
-        };
+    // receive incomming requests here
+    let next = async {
+        let mut recv =
+            RcRef::map(&join_handle, |this| &this.rx).borrow_mut().await;
+
+        recv.recv().await
+    }
+    .await;
 
     // Send incomming request to Js land
-
-    */
+    if let Some(record) = next {
+        let ptr = ExternalPointer::new(RcHttpStream(record));
+        return Ok(ptr.into_raw());
+    }
 
     let _res = RcRef::map(join_handle, |this| &this.join_handle)
         .borrow_mut()
@@ -169,7 +263,7 @@ pub async fn op_http_wait(
         .await
         .unwrap();
 
-    Ok(())
+    Ok(null())
 }
 
 /*
