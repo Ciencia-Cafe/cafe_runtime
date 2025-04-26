@@ -1,5 +1,5 @@
 import { core, primordials } from "ext:core/mod.js";
-import * as http from "ext:runtime_http/01.js";
+import * as http from "ext:runtime_http/http.js";
 
 const ops = core.ops;
 

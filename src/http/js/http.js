@@ -1,4 +1,5 @@
 import { op_http_serve, op_http_wait } from "ext:core/ops";
+import { Request } from "ext:runtime_http/request.js";
 
 export class Http {
   #rid;
@@ -14,10 +15,12 @@ export class Http {
     console.log("Serving http server", rid);
 
     while (true) {
-      const requestPointer = await op_http_wait(rid);
-      if (requestPointer) {
-        console.log("receive request:", requestPointer);
-        break;
+      const reqRid = await op_http_wait(rid);
+      if (reqRid) {
+        const request = new Request(reqRid);
+        console.log("receive request:", request);
+
+        await request.complete();
       }
     }
   }

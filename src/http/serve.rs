@@ -15,6 +15,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+use super::http_stream::{HttpStream, RcHttpStream, handle_request};
+
 /// Our per-process `Connections`. We can use this to find an existent listener for
 /// a given local address and clone its socket for us to listen on in our thread.
 // static CONNS: std::sync::OnceLock<Arc<SocketAddr>> = std::sync::OnceLock::new();
@@ -48,120 +50,11 @@ impl Resource for NetworkListenerResource {
 
 */
 
-#[derive(Debug)]
-pub struct HttpStream {
-    stream: TcpStream,
-    response_body: Option<String>,
-    is_ready: bool,
-}
-
-impl HttpStream {
-    pub fn new(stream: TcpStream) -> Rc<Self> {
-        Rc::new(Self {
-            stream,
-            response_body: None,
-            is_ready: false,
-        })
-    }
-
-    pub fn set_response_body(&mut self, body: String) {
-        self.response_body = Some(body);
-    }
-
-    pub fn complete(&mut self) {
-        self.is_ready = true;
-    }
-
-    /// Resolves when response head is ready.
-    fn response_ready(&self) -> impl Future<Output = ()> + '_ {
-        struct HttpStreamReady<'a>(&'a HttpStream);
-
-        impl Future for HttpStreamReady<'_> {
-            type Output = ();
-
-            fn poll(
-                self: Pin<&mut Self>,
-                _cx: &mut core::task::Context<'_>,
-            ) -> Poll<Self::Output> {
-                let mut_self = self.0;
-                if mut_self.is_ready {
-                    return Poll::Ready(());
-                }
-                // mut_self.response_waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-        }
-
-        HttpStreamReady(self)
-    }
-}
-
-#[repr(transparent)]
-struct RcHttpStream(Rc<HttpStream>);
-
-// Register the [`HttpRecord`] as an external.
-external!(RcHttpStream, "http stream");
-
 #[derive(Debug, thiserror::Error, deno_error::JsError)]
 pub enum HttpError {
     #[class("BadResource")]
     #[error("Listener has been closed")]
     ServerError,
-}
-
-async fn handle_request(
-    stream: TcpStream,
-    tx: tokio::sync::mpsc::Sender<Rc<HttpStream>>,
-) {
-    let stream = HttpStream::new(stream);
-    println!("new req: {stream:?}");
-
-    let guarded_stream = guard(stream, |_| {});
-    // Clone HttpRecord and send to JavaScript for processing.
-    // Safe to unwrap as channel receiver is never closed.
-    tx.send(guarded_stream.clone()).await.unwrap();
-
-    println!("handle_request response_ready.await");
-    guarded_stream.response_ready().await;
-
-    /*
-        loop {
-            // Wait for the socket to be writable
-            stream.writable().await.unwrap();
-
-            // Try to write data, this may still fail with `WouldBlock`
-            // if the readiness event is a false positive.
-            match stream.try_write(b"hello world") {
-                Ok(n) => {
-                    println!("Write : {n:?}");
-                    break;
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    println!("ERROR: {e:?}");
-                    continue;
-                }
-                Err(e) => {
-                    println!("ERROR: {e:?}");
-                    break;
-                }
-            };
-        }
-    */
-
-    /*
-    let response = "HTTP/1.1 200 OK\r\n\r\n";
-            stream
-            .write_all(b"Hello world")
-            .await
-            .map_err(|_| HttpError::ServerError)
-            .unwrap();
-
-        stream
-            .flush()
-            .await
-            .map_err(|_| HttpError::ServerError)
-            .unwrap();
-    */
 }
 
 struct HttpJoinHandle {
