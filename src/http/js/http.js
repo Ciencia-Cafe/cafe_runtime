@@ -1,5 +1,5 @@
 import { op_http_serve, op_http_wait } from "ext:core/ops";
-import { Request } from "ext:runtime_http/request.js";
+import { HttpStream, Request } from "ext:runtime_http/http_stream.js";
 
 export class Http {
   #rid;
@@ -8,7 +8,13 @@ export class Http {
     this.#rid = rid;
   }
 
-  static async serve() {
+  static async serve(handler) {
+    if (typeof handler !== "function" || !handler) {
+      throw new TypeError(
+        `Cannot serve HTTP requests: handler must be a function, received ${typeof handler}`,
+      );
+    }
+
     const rid = await op_http_serve();
     // const http = new Http(rid);
 
@@ -17,10 +23,15 @@ export class Http {
     while (true) {
       const reqRid = await op_http_wait(rid);
       if (reqRid) {
-        const request = new Request(reqRid);
-        console.log("receive request:", request);
+        const stream = new HttpStream(reqRid);
+        console.log("receive request:", stream);
 
-        await request.complete();
+        const request = new Request(stream);
+        const response = await handler(request);
+
+        console.log("got response:", response);
+
+        await stream.complete();
       }
     }
   }
