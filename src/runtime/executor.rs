@@ -1,9 +1,12 @@
+use std::ffi::CString;
+use std::path::Path;
 use std::rc::Rc;
 
 use deno_core::error::JsError;
-use deno_core::{Extension, ModuleSpecifier, anyhow, extension, v8};
+use deno_core::{Extension, anyhow, extension, v8};
 use deno_core::{FsModuleLoader, JsRuntime, RuntimeOptions};
-use deno_error::JsError;
+use pyo3::Python;
+use tokio::fs;
 
 use crate::http::runtime_http;
 
@@ -12,6 +15,27 @@ extension!(
     esm_entry_point = "ext:runtime/bootstrap.js",
     esm = [dir "src/runtime/js", "bootstrap.js"]
 );
+enum ScriptType {
+    Python,
+    Javascript,
+}
+
+pub async fn execute(file_path: &str) -> deno_core::anyhow::Result<()> {
+    let script_type = Path::new(&file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(|ext| match ext {
+            "py" => Some(ScriptType::Python),
+            "js" => Some(ScriptType::Javascript),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("Invalid extension"))?;
+
+    match script_type {
+        ScriptType::Javascript => execute_js(file_path).await,
+        ScriptType::Python => execute_py(file_path).await,
+    }
+}
 
 pub async fn execute_js(file_path: &str) -> deno_core::anyhow::Result<()> {
     let main_module =
@@ -78,4 +102,16 @@ pub async fn execute_js(file_path: &str) -> deno_core::anyhow::Result<()> {
     js_runtime.run_event_loop(Default::default()).await?;
 
     result.await.map_err(anyhow::Error::from)
+}
+
+pub async fn execute_py(file_path: &str) -> deno_core::anyhow::Result<()> {
+    let contents = fs::read_to_string(file_path).await?;
+    let contents = CString::new(contents).unwrap();
+    Python::with_gil(|py| {
+        if let Err(e) = py.run(&contents, None, None) {
+            e.print(py);
+        }
+    });
+
+    Ok(())
 }
