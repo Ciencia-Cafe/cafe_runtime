@@ -124,8 +124,12 @@ pub async fn execute_js(file_path: &str) -> deno_core::anyhow::Result<()> {
 }
 
 pub async fn execute_py(file_path: &str) -> deno_core::anyhow::Result<()> {
+    let bootstrap = fs::read_to_string("src/runtime/py/bootstrap.py").await?;
+    let bootstrap = CString::new(bootstrap).unwrap();
+
     let contents = fs::read_to_string(file_path).await?;
     let contents = CString::new(contents).unwrap();
+
     Python::with_gil(|py| {
         let runtime_mod = PyModule::new(py, "runtime").unwrap();
         runtime_mod
@@ -136,6 +140,10 @@ pub async fn execute_py(file_path: &str) -> deno_core::anyhow::Result<()> {
         sys_mods
             .set_item("runtime", runtime_mod)
             .expect("failed to inject runtime module");
+
+        if let Err(e) = py.run(&bootstrap, None, None) {
+            e.print(py);
+        }
 
         if let Err(e) = py.run(&contents, None, None) {
             e.print(py);
