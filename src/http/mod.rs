@@ -21,6 +21,7 @@ extension!(
     esm = [
         dir "src/http/js",
         "http.js",
-        "http_stream.js"
+        "http_stream.js",
+        "utils.js"
     ]
 );

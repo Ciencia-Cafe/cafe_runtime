@@ -1,3 +1,4 @@
+import { log } from "./utils.js";
 import { op_http_serve, op_http_wait } from "ext:core/ops";
 import { HttpStream, Request } from "ext:runtime_http/http_stream.js";
 
@@ -18,18 +19,18 @@ export class Http {
     const rid = await op_http_serve();
     // const http = new Http(rid);
 
-    console.log("Serving http server", rid);
+    log("Serving http server", rid);
 
     while (true) {
       const reqRid = await op_http_wait(rid);
       if (reqRid) {
         const stream = new HttpStream(reqRid);
-        console.log("receive request:", stream);
+        log("receive request:", stream);
 
         const request = new Request(stream);
         const response = await handler(request);
 
-        console.log("got response:", response);
+        log("got response:", response);
 
         await stream.complete();
       }

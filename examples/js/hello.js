@@ -1,13 +1,14 @@
 console.log("user Js", "Hello World, from JS");
 
+const log = (...args) => console.log("[JS|user]", ...args);
+
 Runtime.serve(async (req) => {
-  console.log("oiii");
-  console.log("handle request: ", req);
-  console.log("handle method: ", await req.method());
+  log("req: ", req);
+  log("req.method: ", await req.method());
 
   const text = await req.text();
 
-  console.log("handle request: ", text);
+  log("req.text: ", text);
 
   return "ok";
 });

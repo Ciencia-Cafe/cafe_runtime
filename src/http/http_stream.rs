@@ -46,7 +46,7 @@ impl HttpStream {
         let stream = Arc::new(Mutex::new(stream));
 
         let mut guard = stream.lock().await;
-        let parts = HttpStream::extract_request_parts(&mut *guard).await;
+        let parts = HttpStream::extract_request_parts(&mut guard).await;
 
         let inner = HttpStreamInner {
             stream: stream.clone(),

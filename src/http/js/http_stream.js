@@ -1,3 +1,4 @@
+import { log } from "./utils.js";
 import {
   op_http_get_method,
   op_http_read_request_body_text,
@@ -18,7 +19,7 @@ export class Request {
       );
     }
 
-    console.log("New Request");
+    log("New Request");
     this.#inner = stream;
   }
 
@@ -39,7 +40,7 @@ export class HttpStream {
   #rid;
 
   constructor(rid) {
-    console.log("New HttpStream");
+    log("New HttpStream");
     this.#rid = rid;
   }
 
