@@ -14,6 +14,7 @@ globalThis.bootstrap = {
 
 const runtimeNs = {
   serve: http.Http.serve,
+  double: ops.double_js,
 };
 
 function mainRuntimeBootstrap() {

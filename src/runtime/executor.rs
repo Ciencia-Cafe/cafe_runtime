@@ -3,21 +3,40 @@ use std::path::Path;
 use std::rc::Rc;
 
 use deno_core::error::JsError;
-use deno_core::{Extension, anyhow, extension, v8};
+use deno_core::{Extension, anyhow, extension, op2, v8};
 use deno_core::{FsModuleLoader, JsRuntime, RuntimeOptions};
-use pyo3::Python;
+use pyo3::types::{
+    PyAnyMethods, PyDict, PyDictMethods, PyModule, PyModuleMethods,
+};
+use pyo3::{Python, pyfunction, wrap_pyfunction};
 use tokio::fs;
 
 use crate::http::runtime_http;
 
 extension!(
     runtime,
+    ops = [double_js],
     esm_entry_point = "ext:runtime/bootstrap.js",
-    esm = [dir "src/runtime/js", "bootstrap.js"]
+    esm = [dir "src/runtime/js", "bootstrap.js"],
 );
 enum ScriptType {
     Python,
     Javascript,
+}
+
+fn double(x: usize) -> usize {
+    println!("Executing rust double");
+    x * 2
+}
+
+#[pyfunction(name = "double")]
+fn double_py(x: usize) -> usize {
+    double(x)
+}
+
+#[op2(fast)]
+fn double_js(#[bigint] x: usize) -> u32 {
+    double(x) as u32
 }
 
 pub async fn execute(file_path: &str) -> deno_core::anyhow::Result<()> {
@@ -108,6 +127,16 @@ pub async fn execute_py(file_path: &str) -> deno_core::anyhow::Result<()> {
     let contents = fs::read_to_string(file_path).await?;
     let contents = CString::new(contents).unwrap();
     Python::with_gil(|py| {
+        let runtime_mod = PyModule::new(py, "runtime").unwrap();
+        runtime_mod
+            .add_function(wrap_pyfunction!(double_py, &runtime_mod).unwrap())
+            .unwrap();
+
+        let sys_mods = py.import("sys").unwrap().getattr("modules").unwrap();
+        sys_mods
+            .set_item("runtime", runtime_mod)
+            .expect("failed to inject runtime module");
+
         if let Err(e) = py.run(&contents, None, None) {
             e.print(py);
         }
