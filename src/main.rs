@@ -1,6 +1,6 @@
 use std::env;
 
-use deno_server::runtime::executor::execute_js;
+use deno_server::runtime::executor::execute;
 
 fn main() {
     let args = &env::args().collect::<Vec<String>>()[1..];
@@ -15,7 +15,7 @@ fn main() {
         .build()
         .unwrap();
 
-    if let Err(error) = runtime.block_on(execute_js(file_path)) {
+    if let Err(error) = runtime.block_on(execute(file_path)) {
         eprintln!("error: {}", error);
     }
 }

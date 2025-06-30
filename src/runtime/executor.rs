@@ -1,17 +1,60 @@
+use std::ffi::CString;
+use std::path::Path;
 use std::rc::Rc;
 
 use deno_core::error::JsError;
-use deno_core::{Extension, ModuleSpecifier, anyhow, extension, v8};
+use deno_core::{Extension, anyhow, extension, op2, v8};
 use deno_core::{FsModuleLoader, JsRuntime, RuntimeOptions};
-use deno_error::JsError;
+use pyo3::types::{
+    PyAnyMethods, PyDict, PyDictMethods, PyModule, PyModuleMethods,
+};
+use pyo3::{Python, pyfunction, wrap_pyfunction};
+use tokio::fs;
 
 use crate::http::runtime_http;
 
 extension!(
     runtime,
+    ops = [double_js],
     esm_entry_point = "ext:runtime/bootstrap.js",
-    esm = [dir "src/runtime/js", "bootstrap.js"]
+    esm = [dir "src/runtime/js", "bootstrap.js"],
 );
+enum ScriptType {
+    Python,
+    Javascript,
+}
+
+fn double(x: usize) -> usize {
+    println!("Executing rust double");
+    x * 2
+}
+
+#[pyfunction(name = "double")]
+fn double_py(x: usize) -> usize {
+    double(x)
+}
+
+#[op2(fast)]
+fn double_js(#[bigint] x: usize) -> u32 {
+    double(x) as u32
+}
+
+pub async fn execute(file_path: &str) -> deno_core::anyhow::Result<()> {
+    let script_type = Path::new(&file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(|ext| match ext {
+            "py" => Some(ScriptType::Python),
+            "js" => Some(ScriptType::Javascript),
+            _ => None,
+        })
+        .ok_or_else(|| anyhow::anyhow!("Invalid extension"))?;
+
+    match script_type {
+        ScriptType::Javascript => execute_js(file_path).await,
+        ScriptType::Python => execute_py(file_path).await,
+    }
+}
 
 pub async fn execute_js(file_path: &str) -> deno_core::anyhow::Result<()> {
     let main_module =
@@ -78,4 +121,34 @@ pub async fn execute_js(file_path: &str) -> deno_core::anyhow::Result<()> {
     js_runtime.run_event_loop(Default::default()).await?;
 
     result.await.map_err(anyhow::Error::from)
+}
+
+pub async fn execute_py(file_path: &str) -> deno_core::anyhow::Result<()> {
+    let bootstrap = fs::read_to_string("src/runtime/py/bootstrap.py").await?;
+    let bootstrap = CString::new(bootstrap).unwrap();
+
+    let contents = fs::read_to_string(file_path).await?;
+    let contents = CString::new(contents).unwrap();
+
+    Python::with_gil(|py| {
+        let runtime_mod = PyModule::new(py, "runtime").unwrap();
+        runtime_mod
+            .add_function(wrap_pyfunction!(double_py, &runtime_mod).unwrap())
+            .unwrap();
+
+        let sys_mods = py.import("sys").unwrap().getattr("modules").unwrap();
+        sys_mods
+            .set_item("runtime", runtime_mod)
+            .expect("failed to inject runtime module");
+
+        if let Err(e) = py.run(&bootstrap, None, None) {
+            e.print(py);
+        }
+
+        if let Err(e) = py.run(&contents, None, None) {
+            e.print(py);
+        }
+    });
+
+    Ok(())
 }
